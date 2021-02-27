@@ -1,8 +1,12 @@
-from _token import Token, get_chars_of, get as get_tt, get_types_from_replies, get_eof_token
+from _token import Token, get_chars_of, get as get_tgi, get_tokens_by_replies as get_tts, get_eof_token
 from _constant import DIGITS
-from _error import IllegalCharError, InvalidSyntaxError
+from _error import IllegalCharError, InvalidSyntaxError, RTError
 from _node import NumberNode, BinOpNode, UnaryOpNode
+from _value_type import Number
+from _context import Context
 
+##############################################
+# Lexer: Inidcates keywords, convert to tokens
 class Lexer:
     def __init__(self, fn, text: str = ""):
         self.fn = fn
@@ -81,7 +85,8 @@ class Position:
     def copy(self):
         return Position(self.idx, self.ln, self.col, self.fn, self.ftxt)
 
-
+####################################################################
+# Parser: Accept tokens, add brackets to indicate order of operation
 class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
@@ -98,7 +103,7 @@ class Parser:
     def parse(self):
         res = self.expr()
         if not res.error and self.tok_now.type != get_eof_token().type:
-            return res.failure(InvalidSyntaxError(self.tok_now.pos_start, self.tok_now.pos_end, f"Expected {get_tt('op')}"))
+            return res.failure(InvalidSyntaxError(self.tok_now.pos_start, self.tok_now.pos_end, f"Expected {get_tgi('op')}"))
         return res
 
     # Nodes building
@@ -107,7 +112,7 @@ class Parser:
         left = res.register(func())
         if res.error: return res
 
-        while self.tok_now.type in get_types_from_replies(*ops):
+        while self.tok_now.type in get_tts(*ops):
             op_tok = self.tok_now
             res.register(self.advance())
             right = res.register(func())
@@ -120,27 +125,26 @@ class Parser:
         res = ParseResult()
         tok = self.tok_now
 
-        if tok.type in get_types_from_replies("PLUS", "MINUS"):
+        if tok.type in get_tts("PLUS", "MINUS"):
             res.register(self.advance())
             factor = res.register(self.factor())
             if res.error: return res
             return res.success(UnaryOpNode(tok, factor))
 
-        elif tok.type in get_types_from_replies("LPAREN"):
+        elif tok.type in get_tts("LPAREN"):
             res.register(self.advance())
             expr = res.register(self.expr())
             if res.error: return res
-            if self.tok_now.type in get_types_from_replies("RPAREN"):
+            if self.tok_now.type in get_tts("RPAREN"):
                 res.register(self.advance())
                 return res.success(expr)
             else:
-                return res.failure(InvalidSyntaxError(self.tok_now.pos_start, self.tok_now.pos_end, f"Expected {get_types_from_replies('RPAREN')}"))
+                return res.failure(InvalidSyntaxError(self.tok_now.pos_start, self.tok_now.pos_end, f"Expected {get_tts('RPAREN')}"))
 
-
-        elif tok.type in get_tt("factor"):
+        elif tok.type in get_tgi("factor"):
             res.register(self.advance())
             return res.success(NumberNode(tok))
-        return res.failure(InvalidSyntaxError(tok.pos_start, tok.pos_end, f"Expected {get_tt('factor')}"))
+        return res.failure(InvalidSyntaxError(tok.pos_start, tok.pos_end, f"Expected {get_tgi('factor')}"))
 
     def term(self):
         return self.bin_op_(self.factor, ["MUL", "DIV"])
@@ -170,9 +174,67 @@ class ParseResult:
         return self
 
 
+########################################################################################
+# Interpreter: Accept correctly ordered tokens, perform the actions instructed by tokens
+class Interpreter:
+    def visit(self, node, context):
+        method_name = f"_visit_{type(node).__name__}"
+        method = getattr(self, method_name, self.no_visit_method)
+        return method(node, context)
+
+    def no_visit_method(self, node, context):
+        raise Exception(f"Visit method _visit_{type(node).__name__} undefined")
+
+    def _visit_NumberNode(self, node, context):
+        return RuntimeResult().success(Number(node.tok.value).set_context(context).set_pos(node.pos_start, node.pos_end))  # 100% success as no opertion is done
+
+    def _visit_BinOpNode(self, node, context):
+        res = RuntimeResult()
+
+        l = res.register(self.visit(node.lnode, context))
+        if res.error: return res
+        r = res.register(self.visit(node.rnode, context))
+        if res.error: return res
+
+        func = getattr(l, node.op_tok.type.func)
+        result, error = func(r)
+        return res.failure(error) if error else res.success(result.set_pos(node.pos_start, node.pos_end))
+
+    def _visit_UnaryOpNode(self, node, context):
+        res = RuntimeResult()
+        number = res.register(self.visit(node.node, context))
+        if res.error: return res
+
+        if node.op_tok.type in get_tts("MINUS"): number, error = number * Number(-1)
+        return res.failure(error) if error else res.success(number.set_pos(node.pos_start, node.pos_end))
+
+
+class RuntimeResult:
+    def __init__(self):
+        self.value = None
+        self.error = None
+
+    def register(self, res):
+        if res.error: self.error = res.error
+        return res.value
+
+    def success(self, value):
+        self.value = value
+        return self
+
+    def failure(self, error):
+        self.error = error
+        return self
+
+
 def run(fn, text):
     tokens, error = Lexer(fn, text).make_tokens()
     if error: return None, error
 
     ast = Parser(tokens).parse()
-    return ast.node, ast.error
+    if ast.error: return None, ast.error
+
+    context = Context("<program>")
+    result = Interpreter().visit(ast.node, context)
+
+    return result.value, result.error

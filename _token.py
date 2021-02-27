@@ -16,10 +16,11 @@ class Token:
 
 
 class TokenType:
-    def __init__(self, char, reply, grammer_item):
+    def __init__(self, char, reply, grammer_item, func=None):
         self.char = char
         self.reply = reply
         self.grammer_item = grammer_item
+        self.func = func
 
     def __repr__(self):
         return self.reply
@@ -28,10 +29,10 @@ class TokenType:
 types = [
     TokenType("INT", "INT", "factor"),
     TokenType("FLOAT", "FLOAT", "factor"),
-    TokenType("+", "PLUS", "op"),
-    TokenType("-", "MINUS", "op"),
-    TokenType("*", "MUL", "op"),
-    TokenType("/", "DIV", "op"),
+    TokenType("+", "PLUS", "op", "__add__"),
+    TokenType("-", "MINUS", "op", "__sub__"),
+    TokenType("*", "MUL", "op", "__mul__"),
+    TokenType("/", "DIV", "op", "__div__"),
     TokenType("(", "LPAREN", "brac"),
     TokenType(")", "RPAREN", "brac"),
     TokenType("EOF", "EOF", "eof"),
@@ -50,7 +51,7 @@ def get_replies_of(grammer_item):
     return {t.reply: t for t in get(grammer_item)}
 
 
-def get_types_from_replies(*replies):
+def get_tokens_by_replies(*replies):
     return [t for t in types if t.reply in replies]
 
 
