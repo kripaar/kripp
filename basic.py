@@ -1,4 +1,4 @@
-from _token import Token, get_chars_of, get as get_tgi, get_tokens_by_replies as get_tts, get_eof_token
+from _token import Token, get_chars_of, get as get_tgi, get_tokens_by_replies as get_ttr, get_eof_token, get_token_by_priority as get_ttp, max_prio
 from _constant import DIGITS
 from _error import IllegalCharError, InvalidSyntaxError, RTError
 from _node import NumberNode, BinOpNode, UnaryOpNode
@@ -29,7 +29,7 @@ class Lexer:
                 self.advance()
             elif self.char_now in DIGITS:
                 tokens.append(self.make_number())
-            elif self.char_now in get_chars_of("op"):  # operators e.g. + - * /
+            elif self.char_now in get_chars_of("op"):  # operators e.g. + - * / ^
                 tokens.append(Token(get_chars_of("op")[self.char_now], pos_start=self.pos))
                 self.advance()
             elif self.char_now in get_chars_of("brac"):  # brackets e.g. ( )
@@ -101,56 +101,52 @@ class Parser:
         return self.tok_now
 
     def parse(self):
-        res = self.expr()
+        res = self.expr(max_prio)
         if not res.error and self.tok_now.type != get_eof_token().type:
             return res.failure(InvalidSyntaxError(self.tok_now.pos_start, self.tok_now.pos_end, f"Expected {get_tgi('op')}"))
         return res
 
-    # Nodes building
-    def bin_op_(self, func, ops):
+    def expr(self, prio):
         res = ParseResult()
-        left = res.register(func())
-        if res.error: return res
 
-        while self.tok_now.type in get_tts(*ops):
-            op_tok = self.tok_now
-            res.register(self.advance())
-            right = res.register(func())
+        if prio >= 2:  # Bin Op
+            left = res.register(self.expr(prio-1))
             if res.error: return res
-            left = BinOpNode(left, op_tok, right)  # set it back to left to allow chained ops of same types
 
-        return res.success(left)
-
-    def factor(self):
-        res = ParseResult()
-        tok = self.tok_now
-
-        if tok.type in get_tts("PLUS", "MINUS"):
-            res.register(self.advance())
-            factor = res.register(self.factor())
-            if res.error: return res
-            return res.success(UnaryOpNode(tok, factor))
-
-        elif tok.type in get_tts("LPAREN"):
-            res.register(self.advance())
-            expr = res.register(self.expr())
-            if res.error: return res
-            if self.tok_now.type in get_tts("RPAREN"):
+            while self.tok_now.type in get_ttp(prio):
+                op_tok = self.tok_now
                 res.register(self.advance())
-                return res.success(expr)
+                right = res.register(self.expr(prio-1))
+                if res.error: return res
+                left = BinOpNode(left, op_tok, right)  # set it back to left to allow chained ops of same types
+
+            return res.success(left)
+
+        elif prio == 1:  # Paren
+            tok = self.tok_now
+            if tok.type in get_ttr("LPAREN"):
+                res.register(self.advance())
+                inside = res.register(self.expr(max_prio))
+                if res.error: return res
+                if self.tok_now.type in get_ttr("RPAREN"):
+                    res.register(self.advance())
+                    return res.success(inside)
+                else:
+                    return res.failure(InvalidSyntaxError(self.tok_now.pos_start, self.tok_now.pos_end, f"Expected {get_ttr('RPAREN')}"))
             else:
-                return res.failure(InvalidSyntaxError(self.tok_now.pos_start, self.tok_now.pos_end, f"Expected {get_tts('RPAREN')}"))
+                return res.register(self.expr(0))
 
-        elif tok.type in get_tgi("factor"):
-            res.register(self.advance())
-            return res.success(NumberNode(tok))
-        return res.failure(InvalidSyntaxError(tok.pos_start, tok.pos_end, f"Expected {get_tgi('factor')}"))
-
-    def term(self):
-        return self.bin_op_(self.factor, ["MUL", "DIV"])
-
-    def expr(self):
-        return self.bin_op_(self.term, ["PLUS", "MINUS"])
+        elif prio == 0:  # Number / Directed number
+            tok = self.tok_now
+            if tok.type in get_ttp(max_prio):
+                res.register(self.advance())
+                factor = res.register(self.expr(0))
+                if res.error: return res
+                return res.success(UnaryOpNode(tok, factor))
+            elif tok.type in get_tgi("factor"):
+                res.register(self.advance())
+                return res.success(NumberNode(tok))
+            return res.failure(InvalidSyntaxError(tok.pos_start, tok.pos_end, f"Expected {get_tgi('factor')}"))
 
 
 class ParseResult:
@@ -205,7 +201,8 @@ class Interpreter:
         number = res.register(self.visit(node.node, context))
         if res.error: return res
 
-        if node.op_tok.type in get_tts("MINUS"): number, error = number * Number(-1)
+        error = None
+        if node.op_tok.type in get_ttr("MINUS"): number, error = number * Number(-1)
         return res.failure(error) if error else res.success(number.set_pos(node.pos_start, node.pos_end))
 
 
@@ -228,12 +225,15 @@ class RuntimeResult:
 
 
 def run(fn, text):
+    # Text -> List of tokens
     tokens, error = Lexer(fn, text).make_tokens()
     if error: return None, error
 
+    # List of tokens -> Ordered list of tokens
     ast = Parser(tokens).parse()
     if ast.error: return None, ast.error
 
+    # Ordered list of tokens -> Result
     context = Context("<program>")
     result = Interpreter().visit(ast.node, context)
 
